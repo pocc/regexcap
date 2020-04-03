@@ -1,11 +1,14 @@
 # RegexCap
 
-Replace bytes in a Wireshark field with a regex.
-This would be used for
+Replace packet fields with a regex and display filter.
+This is useful for removing personally sensitive information by field.
+[TraceWrangler](https://www.tracewrangler.com/), a windows GUI tool, also performs this function.
+
+## Usage
 
 ## Example Usage
 
-### Example 1: MAC address NIC bytes
+### Example 1: Replace MAC address NIC bytes
 
 For example to replace the NIC-specific part of all mac addresses:
 
@@ -20,7 +23,7 @@ $ tshark -r new.pcap -c 1
 * `.{6}`: Take exactly six bytes of any type
 * `$`: This regex ends at the end of the field
 
-### Example 2: Private IP addresses
+### Example 2: Replace private IP addresses
 
 To replace all private IP addresses with quad 0's, use a byte regex like so:
 
