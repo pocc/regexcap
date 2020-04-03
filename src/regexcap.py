@@ -36,30 +36,40 @@ def get_args():
 
     # If from, and to are all present, replace from with to
     # If from DNE, then replace all instances of field with to """
-    parser = argparse.ArgumentParser(
-        prog="regexcap", description="Replace pcap fields with regex"
-    )
-    parser.add_argument(
-        "-r", action="store", help="input file. Use - for stdin", required=True
-    )
-    parser.add_argument(
-        "-w",
-        action="store",
-        help="output file. Use - for stdout",
-        required=True,
-    )
-    e_help = "field to change. Multiple fields can be specified like `-e ip.src -e ip.dst`"
-    parser.add_argument("-e", action="append", help=e_help, required=True)
-    s_help = 'source field bytes regex. Defaults to regex ".*" if no arg is provided.'
-    parser.add_argument("-s", action="store", help=s_help, default=".*")
-    parser.add_argument(
-        "-d", action="store", help="destination field bytes", required=True
-    )
-    parser.add_argument(
-        "-Y",
-        action="store",
-        help="filter first for packets that match a display filter",
-    )
+    desc = "Replace pcap fields with regex"
+    parser = argparse.ArgumentParser(prog="regexcap", description=desc)
+    parser.epilog = """
+
+    ### Usage notes
+
+    * This program will be slow! It uses python with a naive algorithm (i.e. it works)
+    * -Y creates a temporary file that is read from that is deleted on exit
+    * This replaces bytes in packets, not on packet or pcap headers
+
+    ### Contact
+
+    Ross Jacobs, rj[AT]swit.sh
+    https://github.com/pocc/regexcap
+    """
+
+    _help = {
+        "-r": "input file. Use - for stdin",
+        "-w": "output file. Use - for stdout",
+        "-e": "field to change. Multiple fields can be specified like "
+        "`-e ip.src -e ip.dst`. Replacements will occur on all "
+        "specified fields. If `frame` is specified, matching frames"
+        "will be replaced in their entirety.",
+        "-s": 'source field bytes regex. Defaults to regex ".*" if no arg is provided.',
+        "-d": "destination field bytes",
+        "-Y": "Before replacing bytes, delete packets that do not match this display filter",
+    }
+
+    parser.add_argument("-r", action="store", help=_help["-r"], required=True)
+    parser.add_argument("-w", action="store", help=_help["-w"], required=True)
+    parser.add_argument("-e", action="append", help=_help["-e"], required=True)
+    parser.add_argument("-s", action="store", help=_help["-s"], default=".*")
+    parser.add_argument("-d", action="store", help=_help["-d"], required=True)
+    parser.add_argument("-Y", action="store", help=_help["-Y"])
     args = vars(parser.parse_args())
     # Remove encapsulating single/double quotes around any argument
     for arg in args:

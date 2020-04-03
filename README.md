@@ -4,7 +4,21 @@ Replace packet fields with a regex and display filter.
 This is useful for removing personally sensitive information by field.
 [TraceWrangler](https://www.tracewrangler.com/), a windows GUI tool, also performs this function.
 
-## Usage
+## Installation
+
+You can install from [regexcap@PyPI](https://pypi.org/project/RegexCap/0.0/) with pip.
+
+```bash
+pip install regexcap
+```
+
+Alternatively, you can install by cloning it and installing it with pip.
+
+```
+git clone https://github.com/pocc/regexcap
+cd regexcap
+pip install .
+```
 
 ## Example Usage
 
@@ -59,6 +73,7 @@ Run `tests/run_tests` or `pytest -vvv -x` from the root dir.
 
 ## Usage Notes
 
+* This program may be slow! It is written in python and uses a naive algorithm (i.e. it works).
 * Currently set to error if there is a length mismatch between old and new values.
 
 ## License
