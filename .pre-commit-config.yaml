@@ -1,0 +1,52 @@
+---
+# This file configures https://pre-commit.com/
+# Based on pre-commit hooks in
+#   https://github.com/pre-commit/pre-commit-hooks
+#   https://github.com/jumanjihouse/pre-commit-hooks
+# to use specific hooks and options.
+fail_fast: false
+
+repos:
+  - repo: https://github.com/pre-commit/pre-commit-hooks
+    rev: 1f6de3d70391131fac4b911ae913c568e571e34e
+    hooks:
+      - id: trailing-whitespace
+      - id: end-of-file-fixer
+        exclude: \.cp?p?$
+      - id: check-docstring-first
+      - id: check-added-large-files
+      - id: check-yaml
+      - id: debug-statements
+      - id: requirements-txt-fixer
+  - repo: https://github.com/pre-commit/pre-commit
+    rev: b8300268bf2d8797f28edf9063d7e5659ad4d535
+    hooks:
+    -   id: validate_manifest
+  - repo: https://github.com/asottile/reorder_python_imports
+    rev: bc7b5b2f0fde191c9d0121588ef9bbb79f8e5e21
+    hooks:
+      - id: reorder-python-imports
+        language_version: python3
+  - repo: https://github.com/asottile/pyupgrade
+    rev: v1.16.1
+    hooks:
+      - id: pyupgrade
+  - repo: https://github.com/ambv/black
+    rev: cea13f498418784e22f8fbd78db3f9240a2bad11
+    hooks:
+      - id: black
+        args: ["-l", "79"]
+  - repo: https://github.com/jumanjihouse/pre-commit-hooks
+    rev: 1.11.0
+    hooks:
+      - id: shellcheck
+        args: ["--color=always", "--shell=bash", "-x", "-a", "--exclude=SC1090"]
+        additional_dependencies: [shellcheck]
+  - repo: local
+    hooks:
+      - id: tests
+        name: tests
+        entry: tests/run_tests
+        description: Tests expected output
+        language: script
+        files: \.py$
