@@ -28,29 +28,18 @@ def check_tshark():
 
 
 def get_args():
-    """Args:
-    # 1. File
-    # 2. Field
-    # 3. From
-    # 4. To
-
-    # If from, and to are all present, replace from with to
-    # If from DNE, then replace all instances of field with to """
+    """Get the args with argparse."""
     desc = "Replace pcap fields with regex"
-    parser = argparse.ArgumentParser(prog="regexcap", description=desc)
-    parser.epilog = """
-
-    ### Usage notes
-
-    * This program will be slow! It uses python with a naive algorithm (i.e. it works)
-    * -Y creates a temporary file that is read from that is deleted on exit
-    * This replaces bytes in packets, not on packet or pcap headers
-
-    ### Contact
-
-    Ross Jacobs, rj[AT]swit.sh
-    https://github.com/pocc/regexcap
-    """
+    parser = argparse.ArgumentParser(
+        prog="regexcap",
+        description=desc,
+        formatter_class=argparse.RawTextHelpFormatter,
+    )
+    # Grab examples from README and post into epilog
+    with open("README.md") as f:
+        regex = re.compile(r"(## Usage notes[\s\S]*)## Testing")
+        readme_usage = re.findall(regex, f.read())[0]
+    parser.epilog = readme_usage
 
     _help = {
         "-r": "input file. Use - for stdin",
@@ -71,11 +60,14 @@ def get_args():
     parser.add_argument("-d", action="store", help=_help["-d"], required=True)
     parser.add_argument("-Y", action="store", help=_help["-Y"])
     args = vars(parser.parse_args())
+    # Verify regex in -s is valid
+    check_regex(args["s"])
     # Remove encapsulating single/double quotes around any argument
     for arg in args:
         if args[arg] and len(args[arg]) > 2:
             if args[arg][0] in ['"', "'"] and args[arg][0] == args[arg][-1]:
                 args[arg] = args[arg][1:-1]
+
     return args
 
 
@@ -206,14 +198,13 @@ def main():
     atexit.register(cleanup)
     args = get_args()
 
+    # Explicitly naming these variables for clarity
     infile = args["r"]
     outfile = args["w"]
     from_val = args["s"]
     to_val = args["d"]
     dfilter = args["Y"]
-    # All fields with -Tjsonraw have _raw appended
     fields = [arg + "_raw" for arg in args["e"]]
-    check_regex(from_val)
 
     if dfilter is not None:
         filter_to_new_file(infile, dfilter)
