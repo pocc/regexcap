@@ -7,16 +7,20 @@
 
   WARNING: This program will be slow! It uses python with a naive algorithm.
 """
-import argparse
+import argparse as ap
 import atexit
 import json
+import math
+import multiprocessing
 import os
 import re
 import shutil
 import subprocess as sp
 import sys
+import time
 
 
+TEMP_FOLDER = "temp_regexcap"
 TEMP_FILE = ".temp.pcapng"
 
 
@@ -30,11 +34,8 @@ def check_tshark():
 def get_args():
     """Get the args with argparse."""
     desc = "Replace pcap fields with regex"
-    parser = argparse.ArgumentParser(
-        prog="regexcap",
-        description=desc,
-        formatter_class=argparse.RawTextHelpFormatter,
-    )
+    fcls = ap.RawTextHelpFormatter
+    parser = ap.ArgumentParser(prog="regexcap", description=desc, formatter_class=fcls)
     # Grab examples from README and post into epilog
     with open("README.md") as f:
         regex = re.compile(r"(## Usage notes[\s\S]*)## Testing")
@@ -51,6 +52,10 @@ def get_args():
         "-s": 'source field bytes regex. Defaults to regex ".*" if no arg is provided.',
         "-d": "destination field bytes",
         "-Y": "Before replacing bytes, delete packets that do not match this display filter",
+        "-m": "Speed up execution with multiprocessing by using one process per cpu."
+        "Output is always pcapng. If source file is a pcapng, then header data "
+        "will be rewritten recognizing mergecap as the most recent packet writer.",
+        "-p": "Use scapy for packet processing. Currently 50% slower and always saves to pcap.",
     }
 
     parser.add_argument("-r", action="store", help=_help["-r"], required=True)
@@ -59,12 +64,14 @@ def get_args():
     parser.add_argument("-s", action="store", help=_help["-s"], default=".*")
     parser.add_argument("-d", action="store", help=_help["-d"], required=True)
     parser.add_argument("-Y", action="store", help=_help["-Y"])
+    parser.add_argument("-m", action="store_true", help=_help["-m"])
+    parser.add_argument("-p", action="store_true", help=_help["-p"])
     args = vars(parser.parse_args())
     # Verify regex in -s is valid
     check_regex(args["s"])
     # Remove encapsulating single/double quotes around any argument
     for arg in args:
-        if args[arg] and len(args[arg]) > 2:
+        if isinstance(args[arg], str) and len(args[arg]) > 2:
             if args[arg][0] in ['"', "'"] and args[arg][0] == args[arg][-1]:
                 args[arg] = args[arg][1:-1]
 
@@ -89,11 +96,8 @@ def check_error(child):
 def filter_to_new_file(infile, dfilter):
     """Filter out packets not matching filter and save to a new file.
     This is useful for decreasing the time it takes to run this program."""
-    child = sp.run(
-        ["tshark", "-r", infile, "-Y", dfilter, "-w", TEMP_FILE],
-        stdout=sp.PIPE,
-        stderr=sp.PIPE,
-    )
+    cmds = ["tshark", "-r", infile, "-Y", dfilter, "-w", TEMP_FILE]
+    child = sp.run(cmds, stdout=sp.PIPE, stderr=sp.PIPE)
     check_error(child)
 
 
@@ -130,8 +134,6 @@ def get_replacements(pcap_json, fields, from_val, to_val):
             frame_raw = packet["_source"]["layers"]["frame_raw"][0]
             new_frame = alter_frame(frame_raw, results, from_val, to_val)
             replacements[frame_raw] = new_frame
-    if len(replacements.keys()) == 0:
-        print("[WARN] No packets altered!")
     return replacements
 
 
@@ -145,9 +147,7 @@ def alter_frame(frame_raw, results, from_val, to_val):
             to_len = len(to_val)
             print("  Offset:" + str(offset))
             print("  Before:" + frame_raw[offset : offset + to_len])
-            frame_raw = (
-                frame_raw[:offset] + to_val + frame_raw[offset + to_len :]
-            )
+            frame_raw = frame_raw[:offset] + to_val + frame_raw[offset + to_len :]
             print("  After:" + frame_raw[offset : offset + to_len])
     return frame_raw
 
@@ -167,14 +167,55 @@ def get_values(obj, target_key, result):
             get_values(li_item, target_key, result)
 
 
-def replace_bytes(pcap_bytes, replacements):
+def replace_bytes_over_packets(infile, outfile, replacements):
+    """Replace the bytes for each packet using scapy."""
+    try:
+        import scapy.all as scapyall
+    except ImportError:
+        err_msg = "-p requires scapy to be installed (pip install scapy)"
+        raise ImportError(err_msg)
+    packets = scapyall.rdpcap(infile)
+    mod_packets = []
+    for packet in packets:
+        pcap_bytes = bytes(packet)
+        for orig in replacements.keys():
+            orig_bytes = bytes.fromhex(orig)
+            replacement = replacements[orig]
+            relpacement_bytes = bytes.fromhex(replacement)
+            pcap_bytes = pcap_bytes.replace(orig_bytes, relpacement_bytes)
+        mod_packets.append(pcap_bytes)
+
+    if outfile == "-":  # Treat as stdout
+        scapyall.wrpcap(TEMP_FILE, packets)
+        with open(TEMP_FILE, "rb") as f:
+            file_bytes = f.read()
+            sys.stdout.buffer.write(file_bytes)
+    else:
+        scapyall.wrpcap(outfile, packets)
+
+
+def replace_bytes_over_file(infile, outfile, replacements):
     """Replace the bytes in the pcap using from/to in replacements as a guide."""
+    pcap_bytes = get_pcap_bytes(infile)
     for orig in replacements.keys():
         orig_bytes = bytes.fromhex(orig)
         replacement = replacements[orig]
         relpacement_bytes = bytes.fromhex(replacement)
         pcap_bytes = pcap_bytes.replace(orig_bytes, relpacement_bytes)
-    return pcap_bytes
+
+    write_file(outfile, pcap_bytes)
+
+
+def get_num_packets(pcap_file):
+    """Get the number of packets in a packet capture."""
+    cmds = ["capinfos", "-cM", pcap_file]
+    child = sp.run(cmds, stdout=sp.PIPE, stderr=sp.DEVNULL)
+    if child.returncode != 0:
+        error_msg = "File `" + pcap_file + "`is not a packet capture!"
+        raise FileNotFoundError(error_msg)
+    output = child.stdout.decode("utf-8")
+    num_ptks = int(re.search(r"(\d+)\n$", output)[1])
+    return num_ptks
 
 
 def write_file(outfile, pcap_bytes):
@@ -190,12 +231,41 @@ def cleanup():
     """Cleanup temporary file if one was created."""
     if os.path.exists(TEMP_FILE):
         os.remove(TEMP_FILE)
+    if os.path.exists(TEMP_FOLDER):
+        shutil.rmtree(TEMP_FOLDER)
+
+
+def log_str(proc_str, start):
+    """Create a preamble string for stdout."""
+    former = "[{:>4}".format(proc_str)
+    latter = "] {:.2f}".format(round(time.time() - start, 3))
+    return former + latter
+
+
+def run(proc_num, infile, outfile, fields, from_val, to_val, use_scapy, start):
+    """Run with the arguments"""
+    proc = str(proc_num)
+    print(log_str(proc, start), ": Starting")
+    pcap_json = get_pcap_json(infile)
+    print(log_str(proc, start), ": Received pcap json from tshark")
+    replacements = get_replacements(pcap_json, fields, from_val, to_val)
+    if len(replacements.keys()) == 0:
+        print(log_str(proc, start), ": No packets altered!")
+    print(log_str(proc, start), ": Generated byte replacements")
+    # Use scapy to replace bytes per packet or for the whole file (much slower)
+    if use_scapy:
+        replace_bytes_over_packets(infile, outfile, replacements)
+    else:
+        replace_bytes_over_file(infile, outfile, replacements)
+    print(log_str(proc, start), ": Saved file")
 
 
 def main():
     """main()"""
     check_tshark()
     atexit.register(cleanup)
+    start = time.time()
+    os.makedirs(TEMP_FOLDER, exist_ok=True)
     args = get_args()
 
     # Explicitly naming these variables for clarity
@@ -204,16 +274,38 @@ def main():
     from_val = args["s"]
     to_val = args["d"]
     dfilter = args["Y"]
+    use_scapy = args["p"]
+    use_multiprocessing = args["m"]
     fields = [arg + "_raw" for arg in args["e"]]
 
-    if dfilter is not None:
+    if dfilter:
         filter_to_new_file(infile, dfilter)
         infile = TEMP_FILE
-    pcap_bytes = get_pcap_bytes(infile)
-    pcap_json = get_pcap_json(infile)
-    replacements = get_replacements(pcap_json, fields, from_val, to_val)
-    new_pcap_bytes = replace_bytes(pcap_bytes, replacements)
-    write_file(outfile, new_pcap_bytes)
+    if not use_multiprocessing:
+        run(0, infile, outfile, fields, from_val, to_val, use_scapy, start)
+    else:
+        # Splitting with editcap is FAST, so use that to buffer
+        num_packets = get_num_packets(infile)
+        buffer_num = math.ceil(num_packets / multiprocessing.cpu_count())
+        # Create partial pcaps with every 100 packets
+        editcap_out = TEMP_FOLDER + "/.partial.pcap"
+        cmds = ["editcap", infile, editcap_out, "-c", str(buffer_num)]
+        child = sp.run(cmds, stdout=sp.PIPE, stderr=sp.PIPE)
+        check_error(child)
+        partial_names = os.listdir(TEMP_FOLDER)
+        partial_files = [TEMP_FOLDER + "/" + f for f in partial_names]
+        args = [fields, from_val, to_val, use_scapy, start]
+        pool = multiprocessing.Pool(multiprocessing.cpu_count())
+        work_set = []
+        for i in range(len(partial_files)):
+            partial = partial_files[i]
+            work_set.append([i, partial, partial, *args])
+        pool.starmap(run, work_set)
+
+        cmds = ["mergecap", "-w", outfile] + partial_files
+        child = sp.run(cmds, stdout=sp.PIPE, stderr=sp.PIPE)
+        check_error(child)
+        print("Finished in " + str(time.time() - start) + " seconds.")
 
 
 if __name__ == "__main__":

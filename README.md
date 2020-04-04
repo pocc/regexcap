@@ -22,6 +22,7 @@ pip install .
 
 ## Usage notes
 
+* `-m` uses multiprocessing and will speed up execution for large files
 * Avoid shorthand display filters like `-e ip.addr` and use their more explicit
   representations like `-e ip.src -e ip.dst`. Tshark maps shorthand
   display filters to exactly one field in json output, so fewer fields may be
