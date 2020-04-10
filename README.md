@@ -2,7 +2,8 @@
 
 Replace packet fields with a regex and display filter.
 This is useful for removing personally sensitive information by field.
-[TraceWrangler](https://www.tracewrangler.com/), a windows GUI tool, also performs this function.
+[TraceWrangler](https://www.tracewrangler.com/) also performs this function,
+but is limited to a Windows GUI and has a limited set of editable fields.
 
 ## Installation
 
@@ -20,16 +21,38 @@ cd regexcap
 pip install .
 ```
 
+## Command Line Options
+
+```bash
+$ regexcap --help
+usage: regexcap [-h] -r R -w W -e E [-s S] -d D [-Y Y] [-m] [-p]
+
+Replace pcap fields with regex
+
+optional arguments:
+  -h, --help  show this help message and exit
+  -r R        input file. Use - for stdin
+  -w W        output file. Use - for stdout
+  -e E        field to change. Multiple fields can be specified like `-e ip.src -e ip.dst`. Replacements will occur on all specified fields. If `frame` is specified, matching frameswill be replaced in their entirety.
+  -s S        source field bytes regex. Defaults to regex ".*" if no arg is provided.
+  -d D        destination field bytes
+  -Y Y        Before replacing bytes, delete packets that do not match this display filter
+  -m          Speed up execution with multiprocessing by using one process per cpu.Output is always pcapng. If source file is a pcapng, then header data will be rewritten recognizing mergecap as the most recent packet writer.
+  -p          Use scapy for packet processing. Currently 50% slower and always saves to pcap.
+```
+
 ## Usage notes
 
+* This replaces bytes in packets, not in packet or pcap headers. Those fields are not accessible to tshark.
+* Options `-r`, `-w`, `-e`, and `-Y` are copied from tshark for sake of familiarity
+* Whil the default is to not modify pcap/packet header data, multiprocessing (`-m`) modifies and
+  scapy-processing (`-p`) drops this data.
 * `-m` uses multiprocessing and will speed up execution for large files
+* `-Y` and `-m` create temporary files that are deleted on exit
 * Avoid shorthand display filters like `-e ip.addr` and use their more explicit
   representations like `-e ip.src -e ip.dst`. Tshark maps shorthand
   display filters to exactly one field in json output, so fewer fields may be
   replaced than expected.
-* Options `-r`, `-w`, `-e`, `-Y` are copied from tshark for sake of familiarity
-* -Y creates a temporary file that is read from that is deleted on exit
-* This replaces bytes in packets, not on packet or pcap headers
 * Currently set to error if there is a length mismatch between old and new values.
 * This program will be slow! It uses python with a naive algorithm (i.e. it works)
 

@@ -15,6 +15,7 @@ import multiprocessing
 import os
 import re
 import shutil
+import struct
 import subprocess as sp
 import sys
 import time
@@ -49,20 +50,21 @@ def get_args():
         "`-e ip.src -e ip.dst`. Replacements will occur on all "
         "specified fields. If `frame` is specified, matching frames"
         "will be replaced in their entirety.",
-        "-s": 'source field bytes regex. Defaults to regex ".*" if no arg is provided.',
-        "-d": "destination field bytes",
+        "-s": "source field bytes regex. Defaults to regex '.*' (all bytes in field).",
+        "-d": "destination field bytes. Defaults to '' (remove specified bytes in field)",
+        "-y": "Speed up execution by only processing packets that match a display filter.",
         "-Y": "Before replacing bytes, delete packets that do not match this display filter",
         "-m": "Speed up execution with multiprocessing by using one process per cpu."
         "Output is always pcapng. If source file is a pcapng, then header data "
         "will be rewritten recognizing mergecap as the most recent packet writer.",
-        "-p": "Use scapy for packet processing. Currently 50% slower and always saves to pcap.",
+        "-p": "Use scapy for packet processing. Currently 50%% slower and always saves to pcap.",
     }
 
     parser.add_argument("-r", action="store", help=_help["-r"], required=True)
     parser.add_argument("-w", action="store", help=_help["-w"], required=True)
     parser.add_argument("-e", action="append", help=_help["-e"], required=True)
     parser.add_argument("-s", action="store", help=_help["-s"], default=".*")
-    parser.add_argument("-d", action="store", help=_help["-d"], required=True)
+    parser.add_argument("-d", action="store", help=_help["-d"], default="")
     parser.add_argument("-Y", action="store", help=_help["-Y"])
     parser.add_argument("-m", action="store_true", help=_help["-m"])
     parser.add_argument("-p", action="store_true", help=_help["-p"])
@@ -74,7 +76,12 @@ def get_args():
         if isinstance(args[arg], str) and len(args[arg]) > 2:
             if args[arg][0] in ['"', "'"] and args[arg][0] == args[arg][-1]:
                 args[arg] = args[arg][1:-1]
-
+        # args["e"] is a list of strings
+        elif isinstance(args[arg], list):
+            for i in range(len(args[arg])):
+                subarg = args[arg][i]
+                if subarg[0] in ['"', "'"] and subarg[i][0] == subarg[-1]:
+                    args[arg][i] = subarg[1:-1]
     return args
 
 
@@ -111,9 +118,11 @@ def get_pcap_bytes(pcap_file):
     return pcap_bytes
 
 
-def get_pcap_json(pcap_file):
+def get_pcap_json(pcap_file, dfilter):
     """Get the jsonraw pcap json with tshark."""
     cmds = ["tshark", "-r", pcap_file, "-Tjsonraw"]
+    if dfilter:
+        cmds += ["-Y", dfilter]
     child = sp.run(cmds, stdout=sp.PIPE, stderr=sp.PIPE)
     check_error(child)
     json_text = child.stdout.decode("utf-8")
@@ -142,13 +151,15 @@ def alter_frame(frame_raw, results, from_val, to_val):
     # It's possible that a field appears multiple times in a packet.
     # If this happens, then there will be multiple splices at different points.
     for result in results:
-        if len(from_val) == 0 or re.search(from_val, result[0]):
-            offset = result[1] * 2  # hex char count = 2x bytecount
-            to_len = len(to_val)
+        if re.search(from_val, result[0]):
+            # hex char count = 2x bytecount
+            offset = result[1] * 2
+            field_offset = result[2] * 2
+            field_end = offset + field_offset
             print("  Offset:" + str(offset))
-            print("  Before:" + frame_raw[offset : offset + to_len])
-            frame_raw = frame_raw[:offset] + to_val + frame_raw[offset + to_len :]
-            print("  After:" + frame_raw[offset : offset + to_len])
+            print("  Before:" + frame_raw[offset : offset + field_end])
+            frame_raw = frame_raw[:offset] + to_val + frame_raw[field_end:]
+            print("  After:" + frame_raw[offset : offset + len(to_val)])
     return frame_raw
 
 
@@ -192,6 +203,11 @@ def replace_bytes_over_packets(infile, outfile, replacements):
             sys.stdout.buffer.write(file_bytes)
     else:
         scapyall.wrpcap(outfile, packets)
+
+
+def get_filetype(filename):
+    output = sp.check_output(["captype", filename])
+    return output.decode("utf-8").split(": ")[1].strip()
 
 
 def replace_bytes_over_file(infile, outfile, replacements):
@@ -242,22 +258,49 @@ def log_str(proc_str, start):
     return former + latter
 
 
-def run(proc_num, infile, outfile, fields, from_val, to_val, use_scapy, start):
+def run(proc_num, infile, outfile, fields, from_val, to_val, use_scapy, start, dfilter):
     """Run with the arguments"""
     proc = str(proc_num)
     print(log_str(proc, start), ": Starting")
-    pcap_json = get_pcap_json(infile)
+    pcap_json = get_pcap_json(infile, dfilter)
     print(log_str(proc, start), ": Received pcap json from tshark")
-    replacements = get_replacements(pcap_json, fields, from_val, to_val)
-    if len(replacements.keys()) == 0:
+    new_frames = get_replacements(pcap_json, fields, from_val, to_val)
+    if len(new_frames.keys()) == 0:
         print(log_str(proc, start), ": No packets altered!")
     print(log_str(proc, start), ": Generated byte replacements")
     # Use scapy to replace bytes per packet or for the whole file (much slower)
     if use_scapy:
-        replace_bytes_over_packets(infile, outfile, replacements)
+        replace_bytes_over_packets(infile, outfile, new_frames)
     else:
-        replace_bytes_over_file(infile, outfile, replacements)
+        replace_bytes_over_file(infile, outfile, new_frames)
     print(log_str(proc, start), ": Saved file")
+
+
+def multiprocess_run(
+    infile, outfile, fields, from_val, to_val, use_scapy, start, dfilter
+):
+    """Like run, but with multiprocessing."""
+    num_packets = get_num_packets(infile)
+    buffer_num = math.ceil(num_packets / multiprocessing.cpu_count())
+    # Create partial pcaps with every 100 packets
+    editcap_out = TEMP_FOLDER + "/.partial.pcap"
+    cmds = ["editcap", infile, editcap_out, "-c", str(buffer_num)]
+    child = sp.run(cmds, stdout=sp.PIPE, stderr=sp.PIPE)
+    check_error(child)
+    partial_names = os.listdir(TEMP_FOLDER)
+    partial_files = [TEMP_FOLDER + "/" + f for f in partial_names]
+    args = [fields, from_val, to_val, use_scapy, start, dfilter]
+    pool = multiprocessing.Pool(multiprocessing.cpu_count())
+    work_set = []
+    for i in range(len(partial_files)):
+        partial = partial_files[i]
+        work_set.append([i, partial, partial, *args])
+    pool.starmap(run, work_set)
+
+    cmds = ["mergecap", "-w", outfile] + partial_files
+    child = sp.run(cmds, stdout=sp.PIPE, stderr=sp.PIPE)
+    check_error(child)
+    print("Finished in " + str(time.time() - start) + " seconds.")
 
 
 def main():
@@ -278,34 +321,12 @@ def main():
     use_multiprocessing = args["m"]
     fields = [arg + "_raw" for arg in args["e"]]
 
-    if dfilter:
-        filter_to_new_file(infile, dfilter)
-        infile = TEMP_FILE
     if not use_multiprocessing:
-        run(0, infile, outfile, fields, from_val, to_val, use_scapy, start)
+        run(0, infile, outfile, fields, from_val, to_val, use_scapy, start, dfilter)
     else:
-        # Splitting with editcap is FAST, so use that to buffer
-        num_packets = get_num_packets(infile)
-        buffer_num = math.ceil(num_packets / multiprocessing.cpu_count())
-        # Create partial pcaps with every 100 packets
-        editcap_out = TEMP_FOLDER + "/.partial.pcap"
-        cmds = ["editcap", infile, editcap_out, "-c", str(buffer_num)]
-        child = sp.run(cmds, stdout=sp.PIPE, stderr=sp.PIPE)
-        check_error(child)
-        partial_names = os.listdir(TEMP_FOLDER)
-        partial_files = [TEMP_FOLDER + "/" + f for f in partial_names]
-        args = [fields, from_val, to_val, use_scapy, start]
-        pool = multiprocessing.Pool(multiprocessing.cpu_count())
-        work_set = []
-        for i in range(len(partial_files)):
-            partial = partial_files[i]
-            work_set.append([i, partial, partial, *args])
-        pool.starmap(run, work_set)
-
-        cmds = ["mergecap", "-w", outfile] + partial_files
-        child = sp.run(cmds, stdout=sp.PIPE, stderr=sp.PIPE)
-        check_error(child)
-        print("Finished in " + str(time.time() - start) + " seconds.")
+        multiprocess_run(
+            infile, outfile, fields, from_val, to_val, use_scapy, start, dfilter
+        )
 
 
 if __name__ == "__main__":
