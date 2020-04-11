@@ -10,11 +10,11 @@ import pytest
 # hashes for scenarios below (10)
 hashes = [
     "6be03b6c5e185105c37411055867347a19f7f001101070ff93952f17ec0f94db00d379ed43c980a7dfcd868a8e656f63fd5f86ca2de4ded5e48cc8a9292ea98a",
-    "8d5ac5023b4cd4f603f7252f7a0a5740dc3b3d67787afcaaf9c10c52d363d510a1635b0fbe191fca5638141d0c7622a7c580352dafee1ee0a680b4ed74f2bf2e",
+    "5b39a2922272c4a3a0c9b4aa87fce8f388aac568ff78bfb6b321a683c0351209b2d4e05587c411921e24d8f226f130cd138d89368af0d26ac59e7206754254ba",
     "e70ad99b83422ab84ea88c29b8629db802cd34d1bedf4ba24f2b80b108ad2fa6734b366be9336252bfd06ee048be04d49f19a2f41d99a60bea4687d6f7227464",
     "66a737eb51e335550eda3666af819c827030e254f4d7014219551faf5cfa2c765c7301c03365ad587edc35f279e07464231e1cbf0f4d992c8717df72e276c774",
     "66a737eb51e335550eda3666af819c827030e254f4d7014219551faf5cfa2c765c7301c03365ad587edc35f279e07464231e1cbf0f4d992c8717df72e276c774",
-    "f182ef391a85a7176bd72d072dd39bcfa8a89ccd215559d24db177215c131868bfd576605d706ba41e8a039d8220d029f603ecd53f369a318a88ba7f32250f13",
+    "d4e31f7f190adc0e3de3211a7f8304287dce07ea9a5f5212ceafc50f7604f943f36164e5192d32b6a2ddf89059d7566c55671b8c7aa8d4cbfe2d2601bd3566ff",
     "e70ad99b83422ab84ea88c29b8629db802cd34d1bedf4ba24f2b80b108ad2fa6734b366be9336252bfd06ee048be04d49f19a2f41d99a60bea4687d6f7227464",
     "a5fcfae49e63be09ce5c1c48ec331f81443f9f3d66d459c3151eb66483e90da02ad905ee61dc6d3a9646f2c90a8939c8ed4c0e4f52b636681d1cebcc4e9b74e4",
     "ecf7e1b3831d5d26a14e7940205efe34309663e507fdb596bb9ba000fc5d5c96ae5eec3d93c7561a42fcd27cfc67378aebdb0eea8195f4b4c2e70a3f238707d8",
@@ -38,12 +38,12 @@ class TestSwitches:
         bogus_ip6_addr = "0123456789abcdef0123456789abcdef"
         scenarios = [
             [f_80211_ng, ["radiotap.datarate"], ".*", "aa", [], hashes[0]],
-            [f_eth, ["ip.src"], "01234567", ".*", [], hashes[1]],
+            [f_eth, ["ip.src"], ".*", "01234567", [], hashes[1]],
             [f_eth_ng, ["tcp.dstport"], ".*", "abcd", [], hashes[2]],
             # Expected noop
             [f_80211_ng, ["eth.dst"], ".*", "abcdef123456", [], hashes[3]],
             [f_80211_ng, ["wlan.fc"], ".*", "a1b2", [], hashes[4]],
-            [f_eth, ["tcp.srcport"], ".*", "ef01", [], hashes[5]],
+            [f_eth, ["tcp.srcport"], ".*", "7e3d", [], hashes[5]],
             [f_eth_ng, ["ip6.dst"], ".*", bogus_ip6_addr, [], hashes[6]],
             # matches private IP addresses
             [f_eth, ["ip.src", "ip.dst"], rfc1918_regex, "00000000", [], hashes[7]],
@@ -51,6 +51,8 @@ class TestSwitches:
             [f_eth_ng, ["ip6.dst"], ".*", bogus_ip6_addr, ["-p"], hashes[8]],
             # multiprocessing test
             [f_eth, ["tcp.srcport"], ".*", "ef01", ["-m"], hashes[9]],
+            # Same as one for hashes[5], except pass in ASCII instead
+            [f_eth, ["tcp.srcport"], ".*", "~=", ["-A"], hashes[5]],
         ]
 
         def add_scenario(scen):
@@ -59,8 +61,8 @@ class TestSwitches:
             extra_args = ""
             if len(scen[4]) > 0:
                 extra_args = " " + "".join(scen[4])
-            name_parts = [scen[0], fields, scen[2], scen[3], extra_args, cls.outfile]
-            name = "-r {} -s {} -d {}{} -w {}".format(*name_parts)
+            name_parts = [scen[0], cls.outfile, fields, scen[2], scen[3], extra_args]
+            name = "-r {} -w {} {} -s {} -d {}{}".format(*name_parts)
             fmtd_scenario = [
                 name,
                 {

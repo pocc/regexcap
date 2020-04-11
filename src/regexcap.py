@@ -52,8 +52,8 @@ def get_args():
         "will be replaced in their entirety.",
         "-s": "source field bytes regex. Defaults to regex '.*' (all bytes in field).",
         "-d": "destination field bytes. Defaults to '' (remove specified bytes in field)",
-        "-y": "Speed up execution by only processing packets that match a display filter.",
-        "-Y": "Before replacing bytes, delete packets that do not match this display filter",
+        "-Y": "Speed up execution by only processing packets that match a display filter.",
+        "-A": "Experimental. Source regex and destination are both LATIN1 (0x00-0xff) instead.",
         "-m": "Speed up execution with multiprocessing by using one process per cpu."
         "Output is always pcapng. If source file is a pcapng, then header data "
         "will be rewritten recognizing mergecap as the most recent packet writer.",
@@ -66,11 +66,10 @@ def get_args():
     parser.add_argument("-s", action="store", help=_help["-s"], default=".*")
     parser.add_argument("-d", action="store", help=_help["-d"], default="")
     parser.add_argument("-Y", action="store", help=_help["-Y"])
+    parser.add_argument("-A", action="store_true", help=_help["-A"])
     parser.add_argument("-m", action="store_true", help=_help["-m"])
     parser.add_argument("-p", action="store_true", help=_help["-p"])
     args = vars(parser.parse_args())
-    # Verify regex in -s is valid
-    check_regex(args["s"])
     # Remove encapsulating single/double quotes around any argument
     for arg in args:
         if isinstance(args[arg], str) and len(args[arg]) > 2:
@@ -82,6 +81,14 @@ def get_args():
                 subarg = args[arg][i]
                 if subarg[0] in ['"', "'"] and subarg[i][0] == subarg[-1]:
                     args[arg][i] = subarg[1:-1]
+
+    # Verify regex in -s is valid
+    check_regex(args["s"])
+    if not re.match(r"^[a-f0-9A-F]*$", args["d"]) and not args["A"]:
+        raise ValueError(
+            "Destination field bytes MUST be in hex. (Use -A for ASCII find and replace)."
+        )
+
     return args
 
 
@@ -129,7 +136,7 @@ def get_pcap_json(pcap_file, dfilter):
     return json.loads(json_text)
 
 
-def get_replacements(pcap_json, fields, from_val, to_val):
+def get_replacements(pcap_json, fields, from_val, to_val, use_ascii):
     """Generate replacements given a field that exists."""
     replacements = {}
     num_packtes = len(pcap_json)
@@ -139,25 +146,35 @@ def get_replacements(pcap_json, fields, from_val, to_val):
         for field in fields:
             get_values(packet, field, results)
         if len(results) > 0:
-            print("Replacing packet #" + str(packet_num))
             frame_raw = packet["_source"]["layers"]["frame_raw"][0]
-            new_frame = alter_frame(frame_raw, results, from_val, to_val)
+            new_frame = alter_frame(
+                packet_num, frame_raw, results, from_val, to_val, use_ascii
+            )
             replacements[frame_raw] = new_frame
     return replacements
 
 
-def alter_frame(frame_raw, results, from_val, to_val):
+def alter_frame(packet_num, frame_raw, results, from_val, to_val, use_ascii):
     """Make an actionable packet regex."""
     # It's possible that a field appears multiple times in a packet.
     # If this happens, then there will be multiple splices at different points.
+    if use_ascii:
+        to_val = "".join([hex(ord(char))[2:] for char in to_val])
     for result in results:
+        if use_ascii:
+            # If field can't be read as LATIN1, then skip this packet
+            try:
+                result[0] = bytes.fromhex(result[0]).decode("latin1")
+            except UnicodeDecodeError:
+                continue
         if re.search(from_val, result[0]):
+            print("Replacing packet #" + str(packet_num))
             # hex char count = 2x bytecount
             offset = result[1] * 2
             field_offset = result[2] * 2
             field_end = offset + field_offset
             print("  Offset:" + str(offset))
-            print("  Before:" + frame_raw[offset : offset + field_end])
+            print("  Before:" + frame_raw[offset:field_end])
             frame_raw = frame_raw[:offset] + to_val + frame_raw[field_end:]
             print("  After:" + frame_raw[offset : offset + len(to_val)])
     return frame_raw
@@ -216,8 +233,8 @@ def replace_bytes_over_file(infile, outfile, replacements):
     for orig in replacements.keys():
         orig_bytes = bytes.fromhex(orig)
         replacement = replacements[orig]
-        relpacement_bytes = bytes.fromhex(replacement)
-        pcap_bytes = pcap_bytes.replace(orig_bytes, relpacement_bytes)
+        replacement_bytes = bytes.fromhex(replacement)
+        pcap_bytes = pcap_bytes.replace(orig_bytes, replacement_bytes)
 
     write_file(outfile, pcap_bytes)
 
@@ -258,13 +275,24 @@ def log_str(proc_str, start):
     return former + latter
 
 
-def run(proc_num, infile, outfile, fields, from_val, to_val, use_scapy, start, dfilter):
+def run(
+    proc_num,
+    infile,
+    outfile,
+    fields,
+    from_val,
+    to_val,
+    use_scapy,
+    use_ascii,
+    start,
+    dfilter,
+):
     """Run with the arguments"""
     proc = str(proc_num)
     print(log_str(proc, start), ": Starting")
     pcap_json = get_pcap_json(infile, dfilter)
     print(log_str(proc, start), ": Received pcap json from tshark")
-    new_frames = get_replacements(pcap_json, fields, from_val, to_val)
+    new_frames = get_replacements(pcap_json, fields, from_val, to_val, use_ascii)
     if len(new_frames.keys()) == 0:
         print(log_str(proc, start), ": No packets altered!")
     print(log_str(proc, start), ": Generated byte replacements")
@@ -277,7 +305,7 @@ def run(proc_num, infile, outfile, fields, from_val, to_val, use_scapy, start, d
 
 
 def multiprocess_run(
-    infile, outfile, fields, from_val, to_val, use_scapy, start, dfilter
+    infile, outfile, fields, from_val, to_val, use_scapy, use_ascii, start, dfilter
 ):
     """Like run, but with multiprocessing."""
     num_packets = get_num_packets(infile)
@@ -289,7 +317,7 @@ def multiprocess_run(
     check_error(child)
     partial_names = os.listdir(TEMP_FOLDER)
     partial_files = [TEMP_FOLDER + "/" + f for f in partial_names]
-    args = [fields, from_val, to_val, use_scapy, start, dfilter]
+    args = [fields, from_val, to_val, use_scapy, use_ascii, start, dfilter]
     pool = multiprocessing.Pool(multiprocessing.cpu_count())
     work_set = []
     for i in range(len(partial_files)):
@@ -318,14 +346,34 @@ def main():
     to_val = args["d"]
     dfilter = args["Y"]
     use_scapy = args["p"]
+    use_ascii = args["A"]
     use_multiprocessing = args["m"]
     fields = [arg + "_raw" for arg in args["e"]]
 
     if not use_multiprocessing:
-        run(0, infile, outfile, fields, from_val, to_val, use_scapy, start, dfilter)
+        run(
+            0,
+            infile,
+            outfile,
+            fields,
+            from_val,
+            to_val,
+            use_scapy,
+            use_ascii,
+            start,
+            dfilter,
+        )
     else:
         multiprocess_run(
-            infile, outfile, fields, from_val, to_val, use_scapy, start, dfilter
+            infile,
+            outfile,
+            fields,
+            from_val,
+            to_val,
+            use_scapy,
+            use_ascii,
+            start,
+            dfilter,
         )
 
 

@@ -44,6 +44,7 @@ optional arguments:
 ## Usage notes
 
 * This replaces bytes in packets, not in packet or pcap headers. Those fields are not accessible to tshark.
+* This replaces hexademical bytes like byte '\x2a' = ASCII '*'. To replace with ASCII, use `-A`.
 * Options `-r`, `-w`, `-e`, and `-Y` are copied from tshark for sake of familiarity
 * Whil the default is to not modify pcap/packet header data, multiprocessing (`-m`) modifies and
   scapy-processing (`-p`) drops this data.
