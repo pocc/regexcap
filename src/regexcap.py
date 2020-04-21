@@ -15,7 +15,6 @@ import multiprocessing
 import os
 import re
 import shutil
-import struct
 import subprocess as sp
 import sys
 import time
@@ -216,8 +215,8 @@ def replace_bytes_over_file(infile, outfile, replacements):
     for orig in replacements.keys():
         orig_bytes = bytes.fromhex(orig)
         replacement = replacements[orig]
-        relpacement_bytes = bytes.fromhex(replacement)
-        pcap_bytes = pcap_bytes.replace(orig_bytes, relpacement_bytes)
+        replacement_bytes = bytes.fromhex(replacement)
+        pcap_bytes = pcap_bytes.replace(orig_bytes, replacement_bytes)
 
     write_file(outfile, pcap_bytes)
 
