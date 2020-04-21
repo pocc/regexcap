@@ -3,6 +3,7 @@
 For the time being, skip parallelizing with pytest-xdist."""
 import hashlib
 import os
+import re
 import subprocess as sp
 
 import pytest
@@ -53,14 +54,14 @@ class TestSwitches:
             [f_eth, ["tcp.srcport"], ".*", "ef01", ["-m"], hashes[9]],
         ]
 
-        def add_scenario(scen):
+        def add_scenario(scen, outfile):
             """Add a scenario to the class list."""
             fields = " ".join(["-e " + sc for sc in scen[1]])
             extra_args = ""
             if len(scen[4]) > 0:
                 extra_args = " " + "".join(scen[4])
-            name_parts = [scen[0], fields, scen[2], scen[3], extra_args, cls.outfile]
-            name = "-r {} -s {} -d {}{} -w {}".format(*name_parts)
+            name_parts = [scen[0], fields, scen[2], scen[3], outfile, extra_args]
+            name = "-r {}{} -s {} -d {} -w {}{}".format(*name_parts)
             fmtd_scenario = [
                 name,
                 {
@@ -75,7 +76,7 @@ class TestSwitches:
             cls.scenarios.append(fmtd_scenario)
 
         for s in scenarios:
-            add_scenario(s)
+            add_scenario(s, cls.outfile)
 
     def test_run(self, infile, fields, from_val, to_val, addtnl_args, expd_sha512):
         """Run all scenarios. pytest_generate_tests targets this."""
@@ -86,11 +87,24 @@ class TestSwitches:
         sp.run(["python3", "src/regexcap.py"] + args)
         with open(self.outfile, "rb") as f:
             filebytes = f.read()
+        # Test that field has new value
+        self.check_new_file_changed(fields, from_val, to_val)
+        # Test that outfile matches expected bytes output
         filehash = hashlib.sha512(filebytes).hexdigest()
         if filehash != expd_sha512:
-            pytest.fail(
-                "Hash mismatch.\nExpected:" + expd_sha512 + "\nActual:" + filehash
-            )
+            pytest.fail("Hash mismatch.\nExpected:" + expd_sha512 + "\nActual:" + filehash)
+
+    def check_new_file_changed(self, fields, from_val, to_val):
+        """Check whether the new file has the field changed as expected."""
+        args = ["tshark", "-r", self.outfile, "-T", "jsonraw"]
+        output = sp.check_output(args).decode("utf-8").strip()
+        for field in fields:
+            # Get the bytes values of the field
+            values = re.findall(field + r"_raw\": \[\s*\"([^\"]*)", output)
+            for v in values:
+                if re.search(from_val, v) and v != to_val:
+                    err_str = "For field {} expected new value {} but got {} instead."
+                    pytest.fail(err_str.format(field, to_val, v))
 
     def teardown_class(self):
         """Cleanup temporary file if one was created."""
